@@ -1,0 +1,136 @@
+trigger:
+- master
+
+variables:
+- group: HRLJCore-环境变量
+- group: HRLJCore-SVN
+- group: 生成与发布模式
+
+jobs:
+- job: Build
+  displayName: Build
+  # pool: HR-WindowsAgent
+  steps:
+  - task: PowerShell@2
+    displayName: 1. 环境初始化
+    inputs:
+      targetType: ‘inline’
+      script: |
+        $Env:XSIMSDK="$(XSIMSDK)"
+        $Env:QTDIR="$(QTDIR)"
+        $Env:ThirdPart="$(ThirdPart)"
+        echo "环境初始化完毕."    
+      
+  - task: PowerShell@2
+    displayName: 2. 检查XSIMSDK版本
+    inputs:
+      targetType: ‘inline’
+      script: |
+        cd $(XSIMSDK)
+        echo 更新目录:$(XSIMSDK)
+        svn --username $(svn.username) --password $(svn.password) revert -R .
+        svn --username $(svn.username) --password $(svn.password) update
+        echo "版本更新完毕."        
+      
+  - task: PowerShell@2
+    displayName: 3. 构建解决方案
+    inputs:
+      targetType: ‘inline’
+      script: |
+        #如果到后续出现多项目联编，则用线程池来处理
+        $task1 = 
+        {
+            cd $(System.DefaultWorkingDirectory)\HRLJCMake
+            xcopy $(pwd) $(System.DefaultWorkingDirectory)\HRLJCore\CMakeModule /f 
+            cd $(System.DefaultWorkingDirectory)\HRLJCore\CMakeModule
+            .\cmake-vs2017-$(PubMode).bat
+            echo "HRLJCore 构建完毕."
+        }
+        $task2 = 
+        {
+            cd $(System.DefaultWorkingDirectory)\HRLJCMake
+            xcopy $(pwd) $(System.DefaultWorkingDirectory)\HRLJXBase\CMakeModule /f
+            cd $(System.DefaultWorkingDirectory)\HRLJXBase\CMakeModule
+            # $Env:XSIMSDK="G:\project\P031176B"
+            .\cmake-vs2017-$(PubMode).bat
+            echo "HRLJXBase 构建完毕."
+        }
+        $task3 = 
+        {
+            cd $(System.DefaultWorkingDirectory)\HRLJCMake
+            xcopy $(pwd) $(System.DefaultWorkingDirectory)\HRLJAppBase\CMakeModule /f
+            cd $(System.DefaultWorkingDirectory)\HRLJAppBase\CMakeModule
+            # $Env:XSIMSDK="G:\P011484B\SDK"
+            .\cmake-vs2017-$(PubMode).bat
+            echo "HRLJAppBase 构建完毕."
+        }
+        $thread1 = [PowerShell]::Create()
+        $job1 = $thread1.AddScript($task1).BeginInvoke()
+        $thread2 = [PowerShell]::Create()
+        $job2= $thread2.AddScript($task2).BeginInvoke()
+        $thread3 = [PowerShell]::Create()
+        $job3= $thread3.AddScript($task3).BeginInvoke()
+        do
+        {
+            #这一块可写间隙时要做的任务
+        } until($job1.IsCompleted-and $job2.IsCompleted-and $job3.IsCompleted)
+        $result1 = $thread1.EndInvoke($job1)
+        echo $result1
+        $result2 = $thread2.EndInvoke($job2)
+        echo $result2
+        $result3 = $thread3.EndInvoke($job3)
+        echo $result3
+        $thread1.Runspace.Close()
+        $thread1.Dispose()
+        $thread2.Runspace.Close()
+        $thread2.Dispose()
+        $thread3.Runspace.Close()
+        $thread3.Dispose()
+        echo "重建完毕."
+
+  - task: PowerShell@2
+    displayName: 4. 生成解决方案
+    inputs:
+      targetType: ‘inline’
+      script: |
+        cd $(System.DefaultWorkingDirectory)\HRLJCore\RWDx64
+        #是否清理目录可以在AZure DevOps中的清理开关中设置 无需再用CMake做处理
+        if ("$(NeedClean)" -eq "true")
+        {
+            cmake --build . --config $(CreMode) --clean-first -j ($env:NUMBER_OF_PROCESSORS - '1') --target INSTALL
+        }
+        else
+        {
+            cmake --build . --config $(CreMode) -j ($env:NUMBER_OF_PROCESSORS - '1') --target INSTALL
+        }
+        echo "HRLJCore 生成完毕."       
+        # cd $(System.DefaultWorkingDirectory)\HRLJXBase\RWDx64
+        # 是否清理目录可以在AZure DevOps中的清理开关中设置 无需再用CMake做处理
+        # if ("$(NeedClean)" -eq "true")
+        # {
+            # cmake --build . --config $(CreMode) --clean-first -j $env:NUMBER_OF_PROCESSORS --target INSTALL
+        # }
+        # else
+        # {
+            # cmake --build . --config $(CreMode) -j 8 --target INSTALL
+        # }
+        # echo "HRLJXBase 生成完毕."       
+        # cd $(System.DefaultWorkingDirectory)\HRLJAppBase\RWDx64
+        # 是否清理目录可以在AZure DevOps中的清理开关中设置 无需再用CMake做处理
+        # if ("$(NeedClean)" -eq "true")
+        # {
+            # cmake --build . --config $(CreMode) --clean-first -j 8 --target INSTALL
+        # }
+        # else
+        # {
+            # cmake --build . --config $(CreMode) -j 8 --target INSTALL
+        # }
+        echo "HRLJAppBase 生成完毕."       
+  - task: PowerShell@2
+    displayName: 5. 发送群组消息
+    inputs:
+     targetType: ‘inline’
+     script: |
+       cd $(WorkPath)\Scripts
+       python SendMessage.py
+       echo "发送完毕."

@@ -1,0 +1,110 @@
+trigger:
+  branches:
+    include:
+    - master
+
+jobs:
+- job: Build
+  displayName: Build
+  steps:  
+    - bash: |
+        Step_Start(){
+        echo -e "\n=============================================================================="
+        echo "Task         : $1                                                    "
+        echo -e "Status       : 执行                                                       \n"
+        }
+        Step_End(){
+        echo -e "==============================================================================\n"
+        }
+        
+        Step_Start 1.环境初始化
+        envList="$(DefaultEnv)"
+        defaultPath="$(DefaultPath)"
+        pathArr=(${defaultPath//;/ })
+        oldIFS=$IFS
+        IFS=";"
+        i=0
+        for curEnvName in $envList
+            do
+                curEnvParam=${!curEnvName}
+                if [ -z "${curEnvParam}" ];
+                then
+                    echo "环境变量 ${curEnvName} 未进行配置,将对该项进行默认配置"
+                    export ${curEnvName}=${pathArr[${i}]}
+                    echo "当前 ${curEnvName} 环境的值被设置为 ${pathArr[${i}]}"
+                else
+                    echo "已探测到 ${curEnvName} 环境变量"
+                    echo "当前默认 ${curEnvName} 环境的值为 ${curEnvParam}"
+                fi
+                let i+=1;
+            done
+        Step_End
+        
+        Step_Start 2.工程项目配置
+        prjList="$(ProjectEnv)"
+        prjPath="$(ProjectPath)"
+        pathArr=(${defaultPath//;/ })
+        i=0
+        for curPrjName in $prjList
+            do
+                curPrjEnv=${!curPrjName}
+                if [ -z "${curPrjEnv}" ];
+                then
+                    echo "环境变量 ${curPrjName} 未进行配置,将对该项进行默认配置"
+                    export ${curPrjName}=${pathArr[${i}]}
+                    echo "当前 ${curPrjName} 环境的值被设置为 ${pathArr[${i}]}"
+                else
+                    echo "已探测到 ${curPrjName} 环境变量"
+                    echo "当前默认 ${curPrjName} 环境的值为 ${curPrjEnv}"
+                fi
+                let i+=1;
+            done
+        Step_End
+        
+        Step_Start 3.SVN更新同步
+        synList="$(SVN.SynItem)"
+        synPath="$(SVN.SynPath)"
+        synArr=(${synPath//;/ })
+        i=0
+        for curItem in $synList
+            do
+                localItemEnv=${!curItem}
+                if [ -d "${localItemEnv}" ];
+                then
+                    echo "未探测到SVN同步项 ${curItem} 目录文件夹,将自动创建检录目录"
+                    mkdir -p ${localItemEnv}
+                    echo -e "本地同步目录 ${localItemEnv} \n服务器端同步目录 ${synArr[${i}]}"
+                    svn --username "$(SVN.UserName)" --password "$(SVN.Password)" checkout ${synArr[${i}]} ${localItemEnv}
+                else
+                    echo "已探测到SVN同步项 ${curItem} 目录文件夹 ${localItemEnv} ,将进行目录更新同步" 
+                    cd ${localItemEnv}
+                    svn --username "$(SVN.UserName)" --password "$(SVN.Password)" revert -R .
+                    svn --username "$(SVN.UserName)" --password "$(SVN.Password)" update
+                fi
+                let i+=1;
+            done  
+        Step_End
+        
+        Step_Start 4.工程项目生成与编译
+        buildList="$(Build.List)"
+        nProc=$(nproc)
+        echo "本地计算机核心数: $nProc"
+        for curPrj in $buildList
+            do
+                codePath=$(System.DefaultWorkingDirectory)/${curPrj}
+                buildDir=$(System.DefaultWorkingDirectory)/"$(Build.Directory)"
+                cd ${codePath}
+                if [ -d "${buildDir}" ]; then
+                    rm -rf ${buildDir} &&  mkdir ${buildDir}
+                else
+                    mkdir ${buildDir}
+                fi      
+                cmake -DCMAKE_BUILD_TYPE="$(Build.Type)" . && cd ${buildDir}
+                if [ "$(Build.NeedClean)" -eq "true" ]; then
+                    cmake --build . --clean-first --target install -- -j"$nProc"
+                else
+                    cmake --build . --target install -- -j"$nProc"   
+                fi
+            done
+        IFS=oldIFS
+        Step_End
